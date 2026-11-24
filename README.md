@@ -78,12 +78,12 @@ Telegraf is supported natively through its Prometheus output (`outputs.prometheu
 
 ### Detection
 
-The provider is detected automatically from the metric families and labels Telegraf's input plugins produce. Explicit Node Exporter and cAdvisor identifiers always take precedence. An endpoint is recognized as Telegraf if it exposes, with the required labels (`host`, plus `cpu`, `path` or `interface` where applicable), either
+The provider is detected automatically from the metric families and labels Telegraf's input plugins produce. Explicit Node Exporter and cAdvisor identifiers always take precedence. An endpoint is recognized as Telegraf if it exposes, with the required labels (`host`, plus `cpu`, `path`, `interface` or `jail` where applicable), either
 
 - at least three of the supported families listed below, or
-- one of these combinations on the same host: `net_bytes_recv` + `net_bytes_sent`, `mem_used_percent` + `mem_total`, `swap_used_percent` + `swap_total`, `disk_used_percent` + `disk_total`.
+- one of these combinations on the same host: `net_bytes_recv` + `net_bytes_sent`, `mem_used_percent` + `mem_total`, `swap_used_percent` + `swap_total`, `disk_used_percent` + `disk_total`, `fail2ban_banned` + `fail2ban_failed`.
 
-Minimal configurations such as a network-only or memory-only Telegraf are therefore detected, but an endpoint which only exposes e.g. `system_load1` and `system_uptime` is not.
+Minimal configurations such as a network-only, memory-only or Fail2ban-only Telegraf are therefore detected, but an endpoint which only exposes e.g. `system_load1` and `system_uptime` is not.
 
 ### Telegraf configuration
 
@@ -100,6 +100,9 @@ Minimal configurations such as a network-only or memory-only Telegraf are theref
   ignore_fs = ["tmpfs", "devtmpfs", "devfs", "iso9660", "overlay", "aufs", "squashfs"]
 [[inputs.net]]
 [[inputs.system]]
+# Optional, requires fail2ban-client access for the Telegraf user
+[[inputs.fail2ban]]
+  use_sudo = true
 
 [[outputs.prometheus_client]]
   listen = ":9273"
@@ -107,11 +110,11 @@ Minimal configurations such as a network-only or memory-only Telegraf are theref
   path = "/metrics"
 ```
 
-Required input plugins depend on the sensors you want: `cpu` (`totalcpu = true` is recommended, per-core values are used as a fallback), `mem`, `swap`, `disk`, `net` and `system`. Do not set `omit_hostname = true`: hosts are identified by Telegraf's `host` tag. Additional tags (e.g. `location`) are ignored. Any number of hosts can be exposed through one endpoint.
+Required input plugins depend on the sensors you want: `cpu` (`totalcpu = true` is recommended, per-core values are used as a fallback), `mem`, `swap`, `disk`, `net`, `system` and `fail2ban` (optional). Do not set `omit_hostname = true`: hosts are identified by Telegraf's `host` tag. Additional tags (e.g. `location`) are ignored. Any number of hosts can be exposed through one endpoint.
 
 ### Home Assistant setup
 
-Add the integration and use the Telegraf metrics URL (e.g. `http://telegraf.example.com:9273/metrics`). Select the hosts to monitor, then the metrics. Filesystems (`path` label) and network interfaces (`interface` label, any valid Linux name such as `wg-home`) are discovered dynamically. Sensors are only offered and created if the required Telegraf metrics exist for the same host, filesystem or interface.
+Add the integration and use the Telegraf metrics URL (e.g. `http://telegraf.example.com:9273/metrics`). Select the hosts to monitor, then the metrics. Filesystems (`path` label), network interfaces (`interface` label, any valid Linux name such as `wg-home`) and Fail2ban jails (`jail` label) are discovered dynamically. Sensors are only offered and created if the required Telegraf metrics exist for the same host, filesystem, interface or jail.
 
 ### Supported Telegraf metrics
 
@@ -124,15 +127,26 @@ Add the integration and use the Telegraf metrics URL (e.g. `http://telegraf.exam
 | `net_bytes_recv`, `net_bytes_sent`                           | Network receive/transmit rate per interface                                               |
 | `system_uptime`                                              | Uptime in seconds; attribute `last_start_time`                                            |
 | `system_load1`, `system_load5`, `system_load15`              | Load averages (not percentages)                                                           |
+| `fail2ban_banned`, `fail2ban_failed`                         | Fail2ban *Currently banned* and *Currently failed* per jail, plus the *(total)* sensors per host |
 
 Values are used directly where Telegraf provides them (percentages in the range 0..100, small rounding errors are clamped) and calculated from the byte values otherwise (e.g. `mem_total - mem_available`).
+
+### Fail2ban
+
+The `fail2ban_banned` and `fail2ban_failed` gauges of Telegraf's `inputs.fail2ban` are exposed per jail (labels `host` and `jail`) and as a total per host:
+
+- *Fail2ban – Currently banned (&lt;jail&gt;)* and *Fail2ban – Currently failed (&lt;jail&gt;)* for each discovered jail.
+- *Fail2ban – Currently banned (total)* and *Fail2ban – Currently failed (total)* per host. These are the **sum over the jails**, not the number of unique IP addresses (an address banned in two jails is counted twice).
+
+The values are gauges with the state class `measurement`; they can rise and fall and no rates are calculated. Only finite, non-negative integers are accepted (e.g. `5`, `5.0`, `5e0`). A missing or invalid value makes the sensor *unknown*, never `0`. A total is only provided if every jail of the host has a valid value for that metric, so there are never misleading partial sums. Jail and total sensors can be selected independently as metrics.
 
 ### Known limitations
 
 - Network rates are the difference between two consecutive counter samples divided by the actual time between the two measurements. Telegraf only refreshes its samples at its own collection `interval` and the exporter serves cached samples in between. Polling faster than that, or at an interval that is not a multiple of it, results in uneven instantaneous estimates (alternating 0 and peaks). Set the scan interval to at least the Telegraf `interval`.
 - A rate of `0` is a valid measurement (no traffic, or unchanged cached counters). No value (the sensor shows *unknown*) is exposed for the first sample after startup, after a counter reset, after a host reboot (detected by decreasing counters or a decreasing `system_uptime`), for interfaces which just (re)appeared, and for invalid measurements (NaN/infinite, negative or out of range values). Invalid values are never replaced by zero.
 - Without `system_uptime` a reboot is only detected by decreasing counters.
-- Samples without a `host` tag are not discovered.
+- Samples without a `host` tag (or without a `jail` tag for Fail2ban) are not discovered.
+- Fail2ban totals are not offered for hosts on which not every jail exposes both families; the per-jail sensors still are.
 - Metadata (hosts, filesystems, interfaces) is read when the integration is set up or reconfigured. Reload the integration or open its options after adding hosts, filesystems or interfaces.
 - If the endpoint cannot be reached, the entities of all providers become *unavailable* and recover automatically with the next successful poll (see the coordinator note in the development section).
 

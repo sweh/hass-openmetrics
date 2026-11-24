@@ -13,6 +13,10 @@ from ..const import (
     METRIC_CPU_USAGE_PCT,
     METRIC_DISK_USAGE_BYTES,
     METRIC_DISK_USAGE_PCT,
+    METRIC_FAIL2BAN_BANNED,
+    METRIC_FAIL2BAN_BANNED_TOTAL,
+    METRIC_FAIL2BAN_FAILED,
+    METRIC_FAIL2BAN_FAILED_TOTAL,
     METRIC_LOAD_AVERAGE_1M,
     METRIC_LOAD_AVERAGE_5M,
     METRIC_LOAD_AVERAGE_15M,
@@ -60,12 +64,15 @@ TELEGRAF_SYSTEM_LOAD15 = "system_load15"
 TELEGRAF_NET_BYTES_RECV = "net_bytes_recv"
 TELEGRAF_NET_BYTES_SENT = "net_bytes_sent"
 TELEGRAF_SYSTEM_UPTIME = "system_uptime"
+TELEGRAF_FAIL2BAN_BANNED = "fail2ban_banned"
+TELEGRAF_FAIL2BAN_FAILED = "fail2ban_failed"
 # Labels
 TELEGRAF_HOST_LABEL = "host"
 TELEGRAF_CPU_LABEL = "cpu"
 TELEGRAF_DISK_PATH_LABEL = "path"
 TELEGRAF_DISK_DEVICE_LABEL = "device"
 TELEGRAF_NETWORK_INTERFACE_LABEL = "interface"
+TELEGRAF_FAIL2BAN_JAIL_LABEL = "jail"
 # Values
 TELEGRAF_CPU_TOTAL = "cpu-total"
 # Regex
@@ -76,6 +83,7 @@ _HOST_ONLY = (TELEGRAF_HOST_LABEL,)
 _CPU_LABELS = (TELEGRAF_HOST_LABEL, TELEGRAF_CPU_LABEL)
 _DISK_LABELS = (TELEGRAF_HOST_LABEL, TELEGRAF_DISK_PATH_LABEL)
 _NETWORK_LABELS = (TELEGRAF_HOST_LABEL, TELEGRAF_NETWORK_INTERFACE_LABEL)
+_FAIL2BAN_LABELS = (TELEGRAF_HOST_LABEL, TELEGRAF_FAIL2BAN_JAIL_LABEL)
 FAMILY_LABELS: dict[str, tuple[str, ...]] = {
     TELEGRAF_CPU_USAGE_IDLE: _CPU_LABELS,
     TELEGRAF_CPU_USAGE_USER: _CPU_LABELS,
@@ -98,6 +106,8 @@ FAMILY_LABELS: dict[str, tuple[str, ...]] = {
     TELEGRAF_NET_BYTES_RECV: _NETWORK_LABELS,
     TELEGRAF_NET_BYTES_SENT: _NETWORK_LABELS,
     TELEGRAF_SYSTEM_UPTIME: _HOST_ONLY,
+    TELEGRAF_FAIL2BAN_BANNED: _FAIL2BAN_LABELS,
+    TELEGRAF_FAIL2BAN_FAILED: _FAIL2BAN_LABELS,
 }
 # Families which are only used to detect Telegraf
 DETECTION_ONLY_FAMILIES = (TELEGRAF_CPU_USAGE_USER, TELEGRAF_CPU_USAGE_SYSTEM)
@@ -110,6 +120,7 @@ DETECTION_COMBINATIONS: tuple[frozenset[str], ...] = (
     frozenset({TELEGRAF_MEM_USED_PERCENT, TELEGRAF_MEM_TOTAL}),
     frozenset({TELEGRAF_SWAP_USED_PERCENT, TELEGRAF_SWAP_TOTAL}),
     frozenset({TELEGRAF_DISK_USED_PERCENT, TELEGRAF_DISK_TOTAL}),
+    frozenset({TELEGRAF_FAIL2BAN_BANNED, TELEGRAF_FAIL2BAN_FAILED}),
 )
 # Order in which the supported metrics are offered
 SUPPORTED_METRIC_ORDER = (
@@ -126,7 +137,16 @@ SUPPORTED_METRIC_ORDER = (
     METRIC_LOAD_AVERAGE_1M,
     METRIC_LOAD_AVERAGE_5M,
     METRIC_LOAD_AVERAGE_15M,
+    METRIC_FAIL2BAN_BANNED,
+    METRIC_FAIL2BAN_FAILED,
+    METRIC_FAIL2BAN_BANNED_TOTAL,
+    METRIC_FAIL2BAN_FAILED_TOTAL,
 )
+# Per-jail metric and its host total
+FAIL2BAN_TOTALS = {
+    METRIC_FAIL2BAN_BANNED: METRIC_FAIL2BAN_BANNED_TOTAL,
+    METRIC_FAIL2BAN_FAILED: METRIC_FAIL2BAN_FAILED_TOTAL,
+}
 # Marker for hosts without configured swap
 _SWAP_UNCONFIGURED = "swap_unconfigured"
 # Percentages slightly outside of 0..100 (rounding) are clamped, others are invalid
@@ -158,6 +178,12 @@ def _non_negative(value: Any) -> float | None:
     """Return value as finite non-negative float or None."""
     number = _number(value)
     return number if number is not None and number >= 0 else None
+
+
+def _count(value: Any) -> int | None:
+    """Return value as finite non-negative integer or None."""
+    number = _non_negative(value)
+    return int(number) if number is not None and number.is_integer() else None
 
 
 def _valid_uptime(value: Any) -> float | None:
@@ -207,6 +233,7 @@ class _HostFamilies:
     host: set[str] = field(default_factory=set)
     interfaces: dict[str, set[str]] = field(default_factory=dict)
     filesystems: dict[str, set[str]] = field(default_factory=dict)
+    jails: dict[str, set[str]] = field(default_factory=dict)
 
 
 class TelegrafProvider(MetricsProvider):
@@ -281,6 +308,7 @@ class TelegrafProvider(MetricsProvider):
         required = FAMILY_LABELS[family_name]
         path = sample.labels.get(TELEGRAF_DISK_PATH_LABEL)
         interface = sample.labels.get(TELEGRAF_NETWORK_INTERFACE_LABEL)
+        jail = sample.labels.get(TELEGRAF_FAIL2BAN_JAIL_LABEL)
         # Filesystems
         if TELEGRAF_DISK_PATH_LABEL in required and path:
             families.filesystems.setdefault(path, set()).add(family_name)
@@ -302,6 +330,12 @@ class TelegrafProvider(MetricsProvider):
             if resource.network_interfaces is None:
                 resource.network_interfaces = set()
             resource.network_interfaces.add(interface)
+        # Fail2ban jails
+        elif TELEGRAF_FAIL2BAN_JAIL_LABEL in required and jail:
+            families.jails.setdefault(jail, set()).add(family_name)
+            if resource.jails is None:
+                resource.jails = set()
+            resource.jails.add(jail)
         # Host
         else:
             families.host.add(family_name)
@@ -362,6 +396,26 @@ class TelegrafProvider(MetricsProvider):
         }
         return {metric for metric, available in conditions.items() if available}
 
+    @staticmethod
+    def _jail_metrics(families: set[str]) -> set[str]:
+        """Derive supported metric keys of a single Fail2ban jail."""
+        conditions = {
+            METRIC_FAIL2BAN_BANNED: TELEGRAF_FAIL2BAN_BANNED in families,
+            METRIC_FAIL2BAN_FAILED: TELEGRAF_FAIL2BAN_FAILED in families,
+        }
+        return {metric for metric, available in conditions.items() if available}
+
+    def _fail2ban_total_metrics(self, jails: dict[str, set[str]]) -> set[str]:
+        """Derive the host totals, which require the metric from every jail."""
+        if not jails:
+            return set()
+        jail_metrics = [self._jail_metrics(families) for families in jails.values()]
+        return {
+            total_key
+            for key, total_key in FAIL2BAN_TOTALS.items()
+            if all(key in metrics for metrics in jail_metrics)
+        }
+
     def _resource_metrics(self, families: _HostFamilies) -> set[str]:
         """Derive all supported metric keys of a host from its own families."""
         metrics = self._host_metrics(families.host)
@@ -369,6 +423,9 @@ class TelegrafProvider(MetricsProvider):
             metrics |= self._interface_metrics(interface_families)
         for filesystem_families in families.filesystems.values():
             metrics |= self._filesystem_metrics(filesystem_families)
+        for jail_families in families.jails.values():
+            metrics |= self._jail_metrics(jail_families)
+        metrics |= self._fail2ban_total_metrics(families.jails)
         return metrics
 
     def _update_supported_metrics(self, available_metrics: list[str]):
@@ -396,6 +453,10 @@ class TelegrafProvider(MetricsProvider):
                 path: self._filesystem_metrics(path_families)
                 for path, path_families in families.filesystems.items()
             }
+            resource.jail_metrics = {
+                jail: self._jail_metrics(jail_families)
+                for jail, jail_families in families.jails.items()
+            }
         # Reset state to start with a clean state on next metadata extraction
         self._host_families = {}
         return resources
@@ -417,6 +478,8 @@ class TelegrafProvider(MetricsProvider):
             return {sample.labels[TELEGRAF_DISK_PATH_LABEL]: sample.value}
         if metric_key.startswith("net_"):
             return {sample.labels[TELEGRAF_NETWORK_INTERFACE_LABEL]: sample.value}
+        if metric_key.startswith("fail2ban_"):
+            return {sample.labels[TELEGRAF_FAIL2BAN_JAIL_LABEL]: sample.value}
         return sample.value
 
     def _pre_process_metrics(self, metrics: dict):
@@ -434,6 +497,7 @@ class TelegrafProvider(MetricsProvider):
         )
         sensor_metrics.update(self._calculate_swap_usage(resource, metrics))
         sensor_metrics.update(self._calculate_load_average(resource, metrics))
+        sensor_metrics.update(self._calculate_fail2ban(resource, metrics))
         return sensor_metrics
 
     def _calculate_cpu_usage(
@@ -612,4 +676,30 @@ class TelegrafProvider(MetricsProvider):
             load = _non_negative(metrics.get(source_key))
             if load is not None:
                 sensor_metrics[metric_key] = load
+        return sensor_metrics
+
+    def _calculate_fail2ban(self, resource: str, metrics: dict) -> dict[str, Any]:
+        """Collect the Fail2ban gauges per jail and their sums per host.
+
+        The values are plain gauges, so no rates are calculated. A host total is
+        only provided if every jail of the host has a valid value; otherwise it
+        would be a misleading partial sum.
+        """
+        sensor_metrics: dict[str, Any] = {}
+        values = {
+            key: metrics[key] if isinstance(metrics.get(key), dict) else {}
+            for key in (TELEGRAF_FAIL2BAN_BANNED, TELEGRAF_FAIL2BAN_FAILED)
+        }
+        jails = {jail for per_jail in values.values() for jail in per_jail}
+        for source_key, metric_key in (
+            (TELEGRAF_FAIL2BAN_BANNED, METRIC_FAIL2BAN_BANNED),
+            (TELEGRAF_FAIL2BAN_FAILED, METRIC_FAIL2BAN_FAILED),
+        ):
+            counts = {jail: _count(values[source_key].get(jail)) for jail in jails}
+            for jail, count in counts.items():
+                if count is not None:
+                    sensor_metrics[f"{metric_key}_{jail}"] = count
+            valid = [count for count in counts.values() if count is not None]
+            if valid and len(valid) == len(counts):
+                sensor_metrics[FAIL2BAN_TOTALS[metric_key]] = sum(valid)
         return sensor_metrics

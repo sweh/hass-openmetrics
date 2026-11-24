@@ -164,6 +164,18 @@
             },
             "load_average_15m": {
                 "name": "Systemlast (15 Min.)"
+            },
+            "fail2ban_banned": {
+                "name": "Fail2ban – Aktuell gesperrt ({jail})"
+            },
+            "fail2ban_failed": {
+                "name": "Fail2ban – Aktuell fehlgeschlagen ({jail})"
+            },
+            "fail2ban_total_banned": {
+                "name": "Fail2ban – Aktuell gesperrt (gesamt)"
+            },
+            "fail2ban_total_failed": {
+                "name": "Fail2ban – Aktuell fehlgeschlagen (gesamt)"
             }
         }
     },
@@ -210,7 +222,11 @@
                 "swap_usage_pct": "Swap-Nutzung [Prozent]",
                 "load_average_1m": "Systemlast (1 Min.)",
                 "load_average_5m": "Systemlast (5 Min.)",
-                "load_average_15m": "Systemlast (15 Min.)"
+                "load_average_15m": "Systemlast (15 Min.)",
+                "fail2ban_banned": "Fail2ban – Aktuell gesperrt",
+                "fail2ban_failed": "Fail2ban – Aktuell fehlgeschlagen",
+                "fail2ban_total_banned": "Fail2ban – Aktuell gesperrt (gesamt)",
+                "fail2ban_total_failed": "Fail2ban – Aktuell fehlgeschlagen (gesamt)"
             }
         }
     }
