@@ -27,19 +27,26 @@ from .const import (
     METRIC_DEVICE_NAME,
     METRIC_DISK_USAGE_BYTES,
     METRIC_DISK_USAGE_PCT,
+    METRIC_LOAD_AVERAGE_1M,
+    METRIC_LOAD_AVERAGE_5M,
+    METRIC_LOAD_AVERAGE_15M,
     METRIC_MEMORY_USAGE_BYTES,
     METRIC_MEMORY_USAGE_PCT,
     METRIC_NETWORK_RECEIVE_BYTES,
     METRIC_NETWORK_TRANSMIT_BYTES,
+    METRIC_SWAP_USAGE_BYTES,
+    METRIC_SWAP_USAGE_PCT,
     METRIC_UPTIME_SECONDS,
     PROPERTY_CPU_CORES,
     PROPERTY_DEVICE_MODEL,
     PROPERTY_DEVICE_SERIAL,
     PROPERTY_DEVICE_SOFTWARE,
+    PROPERTY_DISK_DEVICE,
     PROPERTY_DISK_SIZE,
     PROPERTY_LAST_START_TIME,
     PROPERTY_MEMORY_SIZE,
     PROPERTY_NETWORK_SPEED,
+    PROPERTY_SWAP_SIZE,
 )
 from .coordinator import OpenMetricsDataUpdateCoordinator
 from .entity import OpenMetricsBaseEntity, async_setup_entities, create_device_info
@@ -68,6 +75,45 @@ SENSORS = {
         native_unit_of_measurement=PERCENTAGE,
         suggested_display_precision=2,
         translation_key=METRIC_MEMORY_USAGE_PCT,
+    ),
+    METRIC_SWAP_USAGE_BYTES: SensorEntityDescription(
+        key=METRIC_SWAP_USAGE_BYTES,
+        icon="mdi:memory",
+        device_class=SensorDeviceClass.DATA_SIZE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfInformation.BYTES,
+        suggested_unit_of_measurement=UnitOfInformation.MEGABYTES,
+        suggested_display_precision=2,
+        translation_key=METRIC_SWAP_USAGE_BYTES,
+    ),
+    METRIC_SWAP_USAGE_PCT: SensorEntityDescription(
+        key=METRIC_SWAP_USAGE_PCT,
+        icon="mdi:memory",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=2,
+        translation_key=METRIC_SWAP_USAGE_PCT,
+    ),
+    METRIC_LOAD_AVERAGE_1M: SensorEntityDescription(
+        key=METRIC_LOAD_AVERAGE_1M,
+        icon="mdi:gauge",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        translation_key=METRIC_LOAD_AVERAGE_1M,
+    ),
+    METRIC_LOAD_AVERAGE_5M: SensorEntityDescription(
+        key=METRIC_LOAD_AVERAGE_5M,
+        icon="mdi:gauge",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        translation_key=METRIC_LOAD_AVERAGE_5M,
+    ),
+    METRIC_LOAD_AVERAGE_15M: SensorEntityDescription(
+        key=METRIC_LOAD_AVERAGE_15M,
+        icon="mdi:gauge",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        translation_key=METRIC_LOAD_AVERAGE_15M,
     ),
     METRIC_CPU_USAGE_PCT: SensorEntityDescription(
         key=METRIC_CPU_USAGE_PCT,
@@ -189,6 +235,12 @@ def create_resource_sensors(
         sensor_descriptions = SENSORS
     # Create sensors
     for key, description in sensor_descriptions.items():
+        # Skip metrics which are not available for this resource
+        if (
+            resource.available_metrics is not None
+            and key not in resource.available_metrics
+        ):
+            continue
         # Check if metric is selected/enabled
         if key in metric_keys:
             # Create network interface sensors
@@ -196,7 +248,10 @@ def create_resource_sensors(
                 key in (METRIC_NETWORK_RECEIVE_BYTES, METRIC_NETWORK_TRANSMIT_BYTES)
                 and resource.network_interfaces
             ):
-                for interface in resource.network_interfaces:
+                for interface in sorted(resource.network_interfaces):
+                    # Skip interfaces which do not provide this metric
+                    if not _is_available(resource.interface_metrics, interface, key):
+                        continue
                     # Recreate description with interface as translation placeholder
                     desc = create_modified_sensor_description(
                         description, translation_placeholders={"interface": interface}
@@ -211,6 +266,9 @@ def create_resource_sensors(
                 and resource.filesystems
             ):
                 for filesystem, unit in resource.filesystems.items():
+                    # Skip filesystems which do not provide this metric
+                    if not _is_available(resource.filesystem_metrics, filesystem, key):
+                        continue
                     changes = {"translation_placeholders": {"filesystem": filesystem}}
                     # For disk usage bytes, suggest the appropriate unit
                     if key == METRIC_DISK_USAGE_BYTES:
@@ -228,6 +286,13 @@ def create_resource_sensors(
                 sensor = OpenMetricsSensor(coordinator, description, device_info)
                 sensors.append(sensor)
     return sensors
+
+
+def _is_available(
+    available: dict[str, set[str]] | None, identity: str, key: str
+) -> bool:
+    """Check if a metric is available for a network interface or filesystem."""
+    return available is None or key in available.get(identity, set())
 
 
 def create_modified_sensor_description(
@@ -382,17 +447,32 @@ class OpenMetricsSensor(OpenMetricsBaseEntity, SensorEntity):
                 METRIC_MEMORY_USAGE_PCT,
             ):
                 return {PROPERTY_MEMORY_SIZE: resource_data.get(PROPERTY_MEMORY_SIZE)}
+            # Set the swap size attribute
+            if self.entity_description.key in (
+                METRIC_SWAP_USAGE_BYTES,
+                METRIC_SWAP_USAGE_PCT,
+            ):
+                return {PROPERTY_SWAP_SIZE: resource_data.get(PROPERTY_SWAP_SIZE)}
             # Set the disk size attribute
             if self.entity_description.key in (
                 METRIC_DISK_USAGE_BYTES,
                 METRIC_DISK_USAGE_PCT,
             ):
                 disk_sizes = resource_data.get(PROPERTY_DISK_SIZE)
+                attributes = {}
                 if self.identity and disk_sizes:
                     # Return the disk size for the specific filesystem
                     if self.identity in disk_sizes:
                         # Value of PROPERTY_DISK_SIZE is the translation key
-                        return {PROPERTY_DISK_SIZE: disk_sizes[self.identity]}
+                        attributes[PROPERTY_DISK_SIZE] = disk_sizes[self.identity]
+                # Return the device of the specific filesystem if known
+                resource_info = self.coordinator.resources.get(resource)
+                if self.identity and resource_info and resource_info.filesystem_devices:
+                    device = resource_info.filesystem_devices.get(self.identity)
+                    if device:
+                        attributes[PROPERTY_DISK_DEVICE] = device
+                if attributes:
+                    return attributes
             # Set the network attribute
             if self.entity_description.key in (
                 METRIC_NETWORK_RECEIVE_BYTES,

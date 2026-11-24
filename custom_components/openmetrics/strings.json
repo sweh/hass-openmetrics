@@ -65,6 +65,21 @@
             },
             "network_transmit_bytes": {
                 "name": "Network transmit"
+            },
+            "swap_usage_bytes": {
+                "name": "Swap usage"
+            },
+            "swap_usage_pct": {
+                "name": "Swap usage [percent]"
+            },
+            "load_average_1m": {
+                "name": "Load average (1 min)"
+            },
+            "load_average_5m": {
+                "name": "Load average (5 min)"
+            },
+            "load_average_15m": {
+                "name": "Load average (15 min)"
             }
         }
     },
@@ -100,7 +115,12 @@
                 "memory_usage_pct": "Memory usage (percent)",
                 "network_receive_bytes": "Network receive",
                 "network_transmit_bytes": "Network transmit",
-                "uptime_seconds": "Uptime"
+                "uptime_seconds": "Uptime",
+                "swap_usage_bytes": "Swap usage",
+                "swap_usage_pct": "Swap usage [percent]",
+                "load_average_1m": "Load average (1 min)",
+                "load_average_5m": "Load average (5 min)",
+                "load_average_15m": "Load average (15 min)"
             }
         }
     }

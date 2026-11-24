@@ -27,6 +27,12 @@ class ResourceInfoData:
     via_resource: str | None = None
     network_interfaces: set[str] | None = None
     filesystems: dict[str, Any] | None = None
+    filesystem_devices: dict[str, str] | None = None
+    # Metric keys available for this resource (None = no per-resource restriction)
+    available_metrics: set[str] | None = None
+    # Metric keys available per network interface / filesystem (None = unrestricted)
+    interface_metrics: dict[str, set[str]] | None = None
+    filesystem_metrics: dict[str, set[str]] | None = None
 
 
 @dataclass
